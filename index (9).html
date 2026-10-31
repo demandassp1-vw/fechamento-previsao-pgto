@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Previsão de Pagto - Fechamento</title>
+<style>
+  :root {
+    --azul: #1f4fbf;
+    --azul-escuro: #163a8c;
+    --verde: #3fcf8e;
+    --verde-claro: #e3f8ee;
+    --verde-texto: #116b43;
+    --cinza-fundo: #f3f4f6;
+    --cinza-linha: #eef0f3;
+    --cinza: #6b7280;
+    --borda: #d9dde3;
+    --texto: #1d2433;
+    --branco: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px;
+    font-family: Calibri, "Segoe UI", Arial, sans-serif;
+    background: var(--cinza-fundo); color: var(--texto);
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  .topo { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 22px; margin: 0; color: var(--azul-escuro); }
+  h1 span { color: var(--verde); }
+  .mes { display: flex; align-items: center; gap: 8px; }
+  .mes label { font-size: 13px; font-weight: 700; color: var(--azul); white-space: nowrap; }
+  .mes input {
+    width: 150px; padding: 7px 10px; font-size: 15px; font-family: inherit;
+    border: 1px solid var(--borda); border-radius: 6px; background: var(--branco); color: var(--texto); outline: none;
+  }
+
+  table { width: 100%; border-collapse: collapse; background: var(--branco);
+    box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: 10px; overflow: hidden; }
+  th, td { border-bottom: 1px solid var(--borda); padding: 7px 10px; font-size: 15px; }
+  th { background: var(--azul); color: var(--branco); font-weight: 600; text-align: left; }
+  th.num, td.num { text-align: center; width: 130px; }
+  tr.pendente td { background: var(--cinza-linha); }
+
+  td.num input {
+    width: 90px; padding: 6px 8px; text-align: center; font-size: 15px; font-family: inherit;
+    border: 1px solid var(--borda); border-radius: 6px; background: var(--branco); color: var(--texto); outline: none;
+  }
+  input:focus { border-color: var(--azul) !important; box-shadow: 0 0 0 3px rgba(31,79,191,.12); }
+  input::placeholder { color: #b8bec8; }
+  input.salvando { border-color: #f0b400; }
+  input.salvo { border-color: var(--verde); background: var(--verde-claro); }
+  input.erro { border-color: #d32f2f; background: #fff0f0; }
+
+  tfoot td { font-weight: 700; background: var(--verde-claro); border-top: 2px solid var(--verde); border-bottom: none; }
+  .status { margin-top: 10px; font-size: 13px; color: var(--cinza); min-height: 18px; }
+  .status.erro { color: #c62828; }
+  .legenda { margin-top: 6px; font-size: 13px; color: var(--cinza); }
+  .legenda span { display: inline-block; width: 12px; height: 12px; background: var(--cinza-linha);
+    border: 1px solid #c4c9d1; vertical-align: middle; margin-right: 4px; }
+
+  @media (max-width: 480px) {
+    h1 { font-size: 19px; }
+    th, td { font-size: 13px; padding: 6px 7px; }
+    th.num, td.num { width: 100px; }
+    td.num input { width: 70px; font-size: 14px; }
+    .mes input { width: 130px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topo">
+    <h1>Previsão de Pagto <span>-</span> Fechamento</h1>
+    <div class="mes">
+      <label for="mesRef">Mês Referência</label>
+      <input id="mesRef" type="text" placeholder="Ex.: Outubro/2026" autocomplete="off">
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>GCM</th><th class="num">Pagto</th></tr></thead>
+    <tbody id="corpo"><tr><td colspan="2">Carregando…</td></tr></tbody>
+    <tfoot><tr><td>TOTAL</td><td class="num" id="total">0</td></tr></tfoot>
+  </table>
+
+  <div class="legenda"><span></span>Linha em cinza = ainda não preenchida</div>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+  // >>> Cole aqui a URL do App da Web do Google Apps Script <<<
+  const API_URL = 'COLE_AQUI_A_URL_DO_APPS_SCRIPT';
+
+  const corpo = document.getElementById('corpo');
+  const mesRef = document.getElementById('mesRef');
+  const statusEl = document.getElementById('status');
+  let dados = [];
+
+  const vazio = v => v === null || v === undefined || v === '';
+  const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  // Quantidade de contratos: número inteiro (null se vazio, NaN se inválido)
+  function paraNumero(t) {
+    t = String(t ?? '').trim();
+    if (t === '') return null;
+    const n = Number(t);
+    return Number.isInteger(n) && n >= 0 ? n : NaN;
+  }
+
+  function setStatus(msg, erro) {
+    statusEl.textContent = msg;
+    statusEl.classList.toggle('erro', !!erro);
+  }
+
+  const digitando = () => document.activeElement && document.activeElement.tagName === 'INPUT';
+
+  function render() {
+    if (digitando()) return; // não redesenha enquanto alguém está digitando
+    corpo.innerHTML = '';
+    dados.forEach(d => {
+      const tr = document.createElement('tr');
+      tr.dataset.row = d.row;
+      tr.innerHTML = `<td>${esc(d.nome)}</td>
+        <td class="num"><input type="number" min="0" step="1" inputmode="numeric" placeholder="0" data-campo="pagto"></td>`;
+      tr.querySelector('input').value = vazio(d.pagto) ? '' : Number(d.pagto);
+      corpo.appendChild(tr);
+    });
+    atualizarVisual();
+  }
+
+  function atualizarVisual() {
+    let total = 0;
+    corpo.querySelectorAll('tr[data-row]').forEach(tr => {
+      const v = paraNumero(tr.querySelector('input').value);
+      tr.classList.toggle('pendente', v === null);
+      if (v !== null && !isNaN(v)) total += v;
+    });
+    document.getElementById('total').textContent = total.toLocaleString('pt-BR');
+  }
+
+  async function enviar(payload) {
+    // text/plain evita o preflight CORS no Apps Script
+    const r = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    return j;
+  }
+
+  async function carregar() {
+    if (API_URL.startsWith('COLE_AQUI')) {
+      setStatus('Configure a URL do Apps Script (API_URL) no código.', true);
+      return;
+    }
+    try {
+      const r = await fetch(API_URL);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      dados = j.data;
+      if (document.activeElement !== mesRef) mesRef.value = j.mes || '';
+      render();
+      setStatus('Atualizado às ' + new Date().toLocaleTimeString('pt-BR'));
+    } catch (e) {
+      setStatus('Erro ao carregar: ' + e.message, true);
+    }
+  }
+
+  async function salvarPagto(input) {
+    const row = Number(input.closest('tr').dataset.row);
+    const v = paraNumero(input.value);
+    if (Number.isNaN(v)) {
+      input.classList.add('erro');
+      setStatus('Digite um número inteiro (ex.: 12).', true);
+      return;
+    }
+    input.value = v === null ? '' : v;
+    input.classList.remove('salvo', 'erro');
+    input.classList.add('salvando');
+    try {
+      await enviar({ acao: 'pagto', row, valor: v === null ? '' : v });
+      const d = dados.find(x => x.row === row);
+      if (d) d.pagto = v;
+      input.classList.replace('salvando', 'salvo');
+      setStatus('Salvo às ' + new Date().toLocaleTimeString('pt-BR'));
+    } catch (e) {
+      input.classList.replace('salvando', 'erro');
+      setStatus('Erro ao salvar: ' + e.message, true);
+    }
+    atualizarVisual();
+  }
+
+  async function salvarMes() {
+    mesRef.classList.remove('salvo', 'erro');
+    mesRef.classList.add('salvando');
+    try {
+      await enviar({ acao: 'mes', valor: mesRef.value.trim() });
+      mesRef.classList.replace('salvando', 'salvo');
+      setStatus('Mês salvo às ' + new Date().toLocaleTimeString('pt-BR'));
+    } catch (e) {
+      mesRef.classList.replace('salvando', 'erro');
+      setStatus('Erro ao salvar o mês: ' + e.message, true);
+    }
+  }
+
+  corpo.addEventListener('input', atualizarVisual);
+  corpo.addEventListener('change', e => { if (e.target.matches('input')) salvarPagto(e.target); });
+  document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('input')) e.target.blur(); });
+  mesRef.addEventListener('change', salvarMes);
+
+  carregar();
+  setInterval(carregar, 30000); // sincroniza com o que os colegas preencheram
+</script>
+</body>
+</html>
